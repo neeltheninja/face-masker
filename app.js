@@ -511,7 +511,7 @@ App.handleFiles = function (fileList) {
                     filename: file.name,
                     origWidth: img.naturalWidth,
                     origHeight: img.naturalHeight,
-                    mask: this.getDefaultMask(img.naturalWidth, img.naturalHeight),
+                    mask: this.getDefaultMask(img),
                     applied: false,
                 });
 
@@ -537,11 +537,31 @@ App.handleFiles = function (fileList) {
     });
 };
 
-App.getDefaultMask = function (imgW, imgH) {
+App.getBackgroundColor = function (img) {
+    const c = document.createElement('canvas');
+    c.width = 5;
+    c.height = 5;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, 5, 5, 0, 0, 5, 5);
+    const data = ctx.getImageData(0, 0, 5, 5).data;
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < data.length; i += 4) {
+        r += data[i];
+        g += data[i+1];
+        b += data[i+2];
+    }
+    const count = data.length / 4;
+    return { r: Math.round(r/count), g: Math.round(g/count), b: Math.round(b/count) };
+};
+
+App.getDefaultMask = function (img) {
+    const imgW = img.naturalWidth;
+    const imgH = img.naturalHeight;
     // Default heuristic position for the left panel
     const panel = this.getPanelBounds(imgW, imgH);
     const pos = this.detector.getHeuristicPosition(panel);
     return {
+        bgColor: this.getBackgroundColor(img),
         x: pos.x,
         y: pos.y,
         width: pos.width,
@@ -799,7 +819,7 @@ App.resetCurrentMask = function () {
     const entry = this.currentEntry();
     if (!entry) return;
 
-    entry.mask = this.getDefaultMask(entry.origWidth, entry.origHeight);
+    entry.mask = this.getDefaultMask(entry.img);
     entry.applied = false;
 
     this.updateSlidersFromMask(entry.mask);
@@ -908,10 +928,11 @@ App.renderMaskOnCtx = function (ctx, mask, scale) {
     const softPower = 0.3 + softness * 1.2; // maps 0–1 → 0.3–1.5
 
     const steps = 16;
+    const bg = mask.bgColor || { r: 128, g: 128, b: 128 };
     for (let i = 0; i <= steps; i++) {
         const t = i / steps; // 0 (inner edge) → 1 (outer edge)
         const alpha = 1 - Math.pow(t, softPower);
-        grad.addColorStop(t, `rgba(128, 128, 128, ${alpha.toFixed(4)})`);
+        grad.addColorStop(t, `rgba(${bg.r}, ${bg.g}, ${bg.b}, ${alpha.toFixed(4)})`);
     }
 
     // Draw the feather zone
@@ -921,7 +942,7 @@ App.renderMaskOnCtx = function (ctx, mask, scale) {
     ctx.fill();
 
     // Draw the solid core
-    ctx.fillStyle = '#808080';
+    ctx.fillStyle = `rgb(${bg.r}, ${bg.g}, ${bg.b})`;
     ctx.beginPath();
     ctx.arc(0, 0, scaledInnerR, 0, Math.PI * 2);
     ctx.fill();
