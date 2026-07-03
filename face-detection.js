@@ -1,22 +1,25 @@
 /**
- * Face Detection Module for Character Datasheet Face Masker
- *
- * Detection strategies (tried in order):
- *   1. face-api.js auto-detection (for unmasked faces)
- *   2. Existing mask detection (finds gray blobs inside the figure — for already-masked faces)
- *   3. Smart figure-boundary heuristic (pixel scanning)
- *   4. Basic fixed-percentage heuristic (last resort)
+ * Face Detection Module (Perfect Synthesis Pipeline)
+ * 
+ * Uses a 5-pass algorithm:
+ * 1. Figure Isolation (Canvas Center of Mass)
+ * 2. Anatomical Proportion Deduction
+ * 3. Existing Mask Detection (HSV Thresholding)
+ * 4. ML Face Detection (MediaPipe Face Landmarker)
+ * 5. Algorithmic Synthesis
  */
 
 class FaceDetectorModule {
     constructor() {
         this.isLoaded = false;
         this.isLoading = false;
-        this.loadError = null;
+        this.faceLandmarker = null;
         this._onStatus = null;
     }
 
-    /* ───────────────────── Initialization ───────────────────── */
+    /* ═══════════════════════════════════════════════════════════
+       1. Initialization (MediaPipe)
+       ═══════════════════════════════════════════════════════════ */
 
     async init(onStatus) {
         if (this.isLoaded) return true;
@@ -24,396 +27,352 @@ class FaceDetectorModule {
 
         this._onStatus = onStatus || (() => {});
         this.isLoading = true;
-        this._onStatus('loading', 'Loading face detection…');
+        this._onStatus('loading', 'Loading MediaPipe Vision Tasks…');
 
-        const libSources = [
-            'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js',
-            'https://unpkg.com/@vladmandic/face-api@1.7.12/dist/face-api.js',
-            'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js',
-        ];
-
-        let libLoaded = false;
-        for (const src of libSources) {
-            try {
-                await this._loadScript(src);
-                libLoaded = true;
-                console.log('face-api.js loaded from:', src);
-                break;
-            } catch (e) {
-                console.warn('Failed to load from:', src, e.message);
+        try {
+            // Load MediaPipe from CDN if not present
+            if (typeof window.FilesetResolver === 'undefined') {
+                await this._loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js');
             }
-        }
 
-        if (!libLoaded || typeof faceapi === 'undefined') {
+            this._onStatus('loading', 'Initializing Face Landmarker model…');
+            
+            // Note: MediaPipe tasks-vision creates global objects or module exports.
+            // When loaded via script tag, it puts classes on window.
+            const vision = window; 
+            
+            const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+            );
+
+            this.faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                    delegate: "GPU"
+                },
+                outputFaceBlendshapes: false,
+                outputFacialTransformationMatrixes: true,
+                runningMode: "IMAGE",
+                numFaces: 1
+            });
+
+            this.isLoaded = true;
             this.isLoading = false;
-            this._onStatus('fallback', 'Smart heuristic active (face-api unavailable)');
+            this._onStatus('ready', 'Advanced Face Detection ready');
+            return true;
+        } catch (e) {
+            console.warn('Failed to load MediaPipe:', e);
+            this.isLoading = false;
+            this._onStatus('fallback', 'ML Unavailable — using Heuristic pipeline');
             return false;
         }
-
-        this._onStatus('loading', 'Loading detection model…');
-        const modelSources = [
-            'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/',
-            'https://unpkg.com/@vladmandic/face-api@1.7.12/model/',
-            'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights/',
-        ];
-
-        let modelLoaded = false;
-        for (const modelPath of modelSources) {
-            try {
-                await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
-                modelLoaded = true;
-                console.log('Models loaded from:', modelPath);
-                break;
-            } catch (e) {
-                console.warn('Failed to load models from:', modelPath, e.message);
-            }
-        }
-
-        if (!modelLoaded) {
-            this.isLoading = false;
-            this._onStatus('fallback', 'Smart heuristic active (models unavailable)');
-            return false;
-        }
-
-        this.isLoaded = true;
-        this.isLoading = false;
-        this._onStatus('ready', 'Face detection ready');
-        return true;
     }
 
     _loadScript(src) {
         return new Promise((resolve, reject) => {
-            if (typeof faceapi !== 'undefined') { resolve(); return; }
             const script = document.createElement('script');
             script.src = src;
-            script.async = true;
             script.crossOrigin = 'anonymous';
-            const timeout = setTimeout(() => reject(new Error('Timeout: ' + src)), 10000);
-            script.onload = () => { clearTimeout(timeout); resolve(); };
-            script.onerror = () => { clearTimeout(timeout); reject(new Error('Failed: ' + src)); };
+            script.onload = resolve;
+            script.onerror = () => reject(new Error('Failed to load: ' + src));
             document.head.appendChild(script);
         });
     }
 
-    /* ───────────────────── Main Detection ───────────────────── */
+    /* ═══════════════════════════════════════════════════════════
+       Main Detection Pipeline
+       ═══════════════════════════════════════════════════════════ */
 
-    async detect(source, panel) {
-        // Strategy 1: face-api.js (works for unmasked faces)
-        if (this.isLoaded) {
-            try {
-                const result = await this._detectWithFaceApi(source, panel);
-                if (result) return result;
-            } catch (err) {
-                console.warn('face-api detection failed:', err);
-            }
-        }
-
-        // Strategy 2 + 3: Smart scan (finds existing masks OR figure boundary)
-        try {
-            const result = this._smartScan(source, panel);
-            if (result) return result;
-        } catch (err) {
-            console.warn('Smart scan failed:', err);
-        }
-
-        // Strategy 4: Basic heuristic
-        return this.getHeuristicPosition(panel);
-    }
-
-    async _detectWithFaceApi(source, panel) {
-        const temp = document.createElement('canvas');
-        temp.width = panel.w;
-        temp.height = panel.h;
-        const ctx = temp.getContext('2d');
+    async detect(source, panel, imgOrigWidth, imgOrigHeight) {
+        // Prepare temporary canvas for the panel region
+        const panelCanvas = document.createElement('canvas');
+        panelCanvas.width = panel.w;
+        panelCanvas.height = panel.h;
+        const ctx = panelCanvas.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(source, panel.x, panel.y, panel.w, panel.h, 0, 0, panel.w, panel.h);
 
-        const detections = await faceapi.detectAllFaces(
-            temp, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.25 })
-        );
-        if (!detections || detections.length === 0) return null;
+        // 1. Figure Isolation
+        const figure = this._isolateFigure(panelCanvas);
 
-        const best = detections.reduce((a, b) => a.box.area > b.box.area ? a : b);
-        const box = best.box;
+        // 2. Anatomical Proportions Fallback
+        const anatomy = this._deduceAnatomy(figure, panel.h);
 
+        // 3. Existing Mask Detection
+        const existingMask = this._detectExistingMask(panelCanvas, anatomy);
+
+        // 4. ML Face Detection
+        let mlFace = null;
+        if (this.isLoaded && this.faceLandmarker) {
+            mlFace = await this._detectWithMediaPipe(panelCanvas);
+        }
+
+        // 5. Algorithmic Synthesis
+        const result = this._synthesize(mlFace, existingMask, anatomy, panelCanvas.width, panelCanvas.height);
+        
+        // Translate back to absolute image coordinates
         return {
-            x: panel.x + box.x + box.width / 2,
-            y: panel.y + box.y + box.height / 2,
-            width:  box.width  * 1.5,
-            height: box.height * 1.6,
-            confidence: best.score,
-            method: 'auto',
+            x: panel.x + result.cx,
+            y: panel.y + result.cy,
+            width: result.width,
+            height: result.height,
+            feather: result.feather,
+            softness: 30, // constant ideal softness
+            confidence: result.confidence,
+            method: result.method
         };
     }
 
-    /* ═══════════════════════════════════════════════════════
-       Smart Scan — handles BOTH masked and unmasked faces
-       ═══════════════════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════════════════════
+       Step 1: Figure Isolation (Pure Canvas API)
+       ═══════════════════════════════════════════════════════════ */
 
-    _smartScan(source, panel) {
-        // Downsample for speed
-        const temp = document.createElement('canvas');
-        const scanScale = Math.min(1, 500 / panel.w);
-        const scanW = Math.round(panel.w * scanScale);
-        const scanH = Math.round(panel.h * scanScale);
-        temp.width = scanW;
-        temp.height = scanH;
-        const ctx = temp.getContext('2d');
-        ctx.drawImage(source, panel.x, panel.y, panel.w, panel.h, 0, 0, scanW, scanH);
+    _isolateFigure(canvas) {
+        const width = canvas.width;
+        const height = canvas.height;
+        const ctx = canvas.getContext('2d');
+        const imgData = ctx.getImageData(0, 0, width, height).data;
 
-        const imgData = ctx.getImageData(0, 0, scanW, scanH);
-        const data = imgData.data;
+        // Sample background from top-left (0,0)
+        const bgR = imgData[0];
+        const bgG = imgData[1];
+        const bgB = imgData[2];
 
-        // ─── Sample background color from corners ───
-        const bg = this._sampleBackground(data, scanW, scanH);
-        const threshold = 35;
+        let minX = width, maxX = -1, minY = height, maxY = -1;
+        let sumX = 0, count = 0;
+        const threshold = 25; // Tolerance for non-background
 
-        // ─── Find figure boundaries ───
-        const figure = this._findFigureBounds(data, scanW, scanH, bg, threshold);
-        if (!figure) return null;
+        const isChar = (r, g, b) => {
+            return Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB) > threshold;
+        };
 
-        // ─── Try to detect an EXISTING gray mask within the figure ───
-        const existingMask = this._detectExistingMask(
-            data, scanW, scanH, bg, threshold, figure
-        );
+        // Pass A: Find global bounding box
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const i = (y * width + x) * 4;
+                if (isChar(imgData[i], imgData[i+1], imgData[i+2])) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                    sumX += x;
+                    count++;
+                }
+            }
+        }
 
-        if (existingMask) {
-            // Found an existing mask — use its position
+        if (count === 0) return null;
+
+        // Pass B: Center of Mass for Head (top 15% of figure)
+        const charHeight = maxY - minY;
+        const headThresholdY = minY + Math.floor(charHeight * 0.15);
+        let headSumX = 0, headCount = 0;
+
+        for (let y = minY; y <= headThresholdY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+                const i = (y * width + x) * 4;
+                if (isChar(imgData[i], imgData[i+1], imgData[i+2])) {
+                    headSumX += x;
+                    headCount++;
+                }
+            }
+        }
+
+        return {
+            top: minY,
+            bottom: maxY,
+            height: charHeight,
+            headCenterX: headCount > 0 ? headSumX / headCount : sumX / count,
+            bg: { r: bgR, g: bgG, b: bgB }
+        };
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       Step 2: Anatomical Proportion Deduction
+       ═══════════════════════════════════════════════════════════ */
+
+    _deduceAnatomy(figure, panelHeight) {
+        if (!figure) {
+            // Absolute fallback if canvas is blank
             return {
-                x: panel.x + existingMask.cx / scanScale,
-                y: panel.y + existingMask.cy / scanScale,
-                width:  existingMask.w / scanScale * 1.2,
-                height: existingMask.h / scanScale * 1.2,
-                confidence: 0.5,
-                method: 'heuristic',
+                cx: panelHeight * 0.5, // approx middle of panel
+                cy: panelHeight * 0.2, // approx head height
+                w: panelHeight * 0.15,
+                h: panelHeight * 0.15
             };
         }
 
-        // ─── No existing mask — estimate from figure boundary ───
-        return this._estimateFromFigure(panel, figure, data, scanW, bg, threshold, scanScale);
-    }
-
-    /**
-     * Sample the average background color from the image corners.
-     */
-    _sampleBackground(data, w, h) {
-        let rSum = 0, gSum = 0, bSum = 0, count = 0;
-        const corners = [
-            [0, 0], [w-1, 0], [0, h-1], [w-1, h-1],
-            [1, 0], [0, 1], [w-2, 0], [w-1, 1],
-            [1, 1], [w-2, 1], [1, h-2], [w-2, h-2],
-        ];
-        for (const [x, y] of corners) {
-            if (x >= 0 && x < w && y >= 0 && y < h) {
-                const i = (y * w + x) * 4;
-                rSum += data[i]; gSum += data[i+1]; bSum += data[i+2];
-                count++;
-            }
-        }
+        // Based on 8-head Loomis canon relative to total figure height
+        const H = figure.height;
         return {
-            r: Math.round(rSum / count),
-            g: Math.round(gSum / count),
-            b: Math.round(bSum / count),
+            cx: figure.headCenterX,
+            cy: figure.top + (H * 0.0625), // 6.25% from top
+            w: H * 0.0833,                 // 8.33% wide
+            h: H * 0.125                   // 12.5% tall
         };
     }
 
-    /**
-     * Find the top and bottom of the character figure by scanning for
-     * rows with significant non-background content.
-     */
-    _findFigureBounds(data, scanW, scanH, bg, threshold) {
-        const xStart = Math.floor(scanW * 0.15);
-        const xEnd   = Math.floor(scanW * 0.85);
-        const xRange = xEnd - xStart;
-        const rowThresh = xRange * 0.06; // 6% of scan width must be non-bg
+    /* ═══════════════════════════════════════════════════════════
+       Step 3: Existing Mask Detection
+       ═══════════════════════════════════════════════════════════ */
 
-        let figureTop = -1;
-        for (let y = 0; y < scanH; y++) {
-            let count = 0;
-            for (let x = xStart; x < xEnd; x++) {
-                const i = (y * scanW + x) * 4;
-                if (Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b) > threshold) {
-                    count++;
+    _detectExistingMask(canvas, anatomy) {
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        const data = ctx.getImageData(0, 0, width, height).data;
+
+        // Scan only within the anatomical head bounding box
+        // Expanded slightly to ensure we capture the whole mask
+        const scanTop = Math.max(0, Math.floor(anatomy.cy - anatomy.h * 0.8));
+        const scanBottom = Math.min(height - 1, Math.floor(anatomy.cy + anatomy.h * 0.8));
+        const scanLeft = Math.max(0, Math.floor(anatomy.cx - anatomy.w * 0.8));
+        const scanRight = Math.min(width - 1, Math.floor(anatomy.cx + anatomy.w * 0.8));
+
+        let grayPixelsX = [];
+        let grayPixelsY = [];
+
+        for (let y = scanTop; y <= scanBottom; y++) {
+            for (let x = scanLeft; x <= scanRight; x++) {
+                const i = (y * width + x) * 4;
+                const r = data[i], g = data[i+1], b = data[i+2];
+
+                // Simple grayscale detection (low saturation check)
+                const max = Math.max(r, g, b);
+                const min = Math.min(r, g, b);
+                const saturation = max === 0 ? 0 : (max - min) / max;
+
+                // Typical gray masks have near-zero saturation and are not pure black/white
+                if (saturation < 0.15 && max > 50 && max < 200) {
+                    grayPixelsX.push(x);
+                    grayPixelsY.push(y);
                 }
             }
-            if (count >= rowThresh) { figureTop = y; break; }
         }
 
-        if (figureTop < 0) return null;
+        // If we found a significant clump of gray pixels
+        if (grayPixelsX.length > (anatomy.w * anatomy.h * 0.1)) {
+            // Sort to find bounds (ignoring extreme outliers)
+            grayPixelsX.sort((a, b) => a - b);
+            grayPixelsY.sort((a, b) => a - b);
+            
+            const trim = Math.floor(grayPixelsX.length * 0.05); // trim 5% tails
+            const pX = grayPixelsX.slice(trim, -trim || undefined);
+            const pY = grayPixelsY.slice(trim, -trim || undefined);
 
-        let figureBottom = scanH;
-        for (let y = scanH - 1; y > figureTop; y--) {
-            let count = 0;
-            for (let x = xStart; x < xEnd; x++) {
-                const i = (y * scanW + x) * 4;
-                if (Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b) > threshold) {
-                    count++;
-                }
-            }
-            if (count >= rowThresh) { figureBottom = y; break; }
+            const minX = pX[0], maxX = pX[pX.length - 1];
+            const minY = pY[0], maxY = pY[pY.length - 1];
+
+            return {
+                cx: (minX + maxX) / 2,
+                cy: (minY + maxY) / 2,
+                w: maxX - minX,
+                h: maxY - minY
+            };
         }
 
-        const height = figureBottom - figureTop;
-        if (height < scanH * 0.15) return null;
-
-        return { top: figureTop, bottom: figureBottom, height };
+        return null;
     }
 
-    /**
-     * Detect an existing gray mask within the upper portion of the figure.
-     *
-     * An existing mask shows up as a horizontal "gray gap" INSIDE the figure —
-     * gray pixels flanked by non-gray content (hair on sides, body below).
-     * We scan each row in the face zone for such gaps.
-     */
-    _detectExistingMask(data, scanW, scanH, bg, threshold, figure) {
-        // Scan the upper 18% of the figure (the face zone)
-        const zoneStart = figure.top;
-        const zoneEnd = Math.min(
-            Math.floor(figure.top + figure.height * 0.18),
-            scanH
-        );
+    /* ═══════════════════════════════════════════════════════════
+       Step 4: ML Face Detection (MediaPipe)
+       ═══════════════════════════════════════════════════════════ */
 
-        const gapRows = []; // rows where we found a gray gap inside the figure
+    async _detectWithMediaPipe(canvas) {
+        try {
+            const results = this.faceLandmarker.detect(canvas);
+            
+            if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+                const landmarks = results.faceLandmarks[0];
+                const width = canvas.width;
+                const height = canvas.height;
 
-        for (let y = zoneStart; y < zoneEnd; y++) {
-            // Step 1: Find the figure's left and right edges at this row
-            let leftEdge = -1, rightEdge = -1;
-            for (let x = 0; x < scanW; x++) {
-                const i = (y * scanW + x) * 4;
-                const diff = Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b);
-                if (diff > threshold) {
-                    if (leftEdge === -1) leftEdge = x;
-                    rightEdge = x;
-                }
+                // Nose tip (index 4) for exact center
+                const cx = landmarks[4].x * width;
+                const cy = landmarks[4].y * height;
+
+                // Left (234) and Right (454) cheeks for exact width
+                const leftX = landmarks[234].x * width;
+                const rightX = landmarks[454].x * width;
+                const faceW = rightX - leftX;
+
+                // Chin (152) and Forehead (10) for exact height
+                const topY = landmarks[10].y * height;
+                const bottomY = landmarks[152].y * height;
+                const faceH = bottomY - topY;
+
+                return { cx, cy, w: faceW, h: faceH };
             }
+        } catch (e) {
+            console.warn('MediaPipe detection failed:', e);
+        }
+        return null;
+    }
 
-            if (leftEdge === -1 || rightEdge - leftEdge < scanW * 0.05) continue;
+    /* ═══════════════════════════════════════════════════════════
+       Step 5: Algorithmic Synthesis
+       ═══════════════════════════════════════════════════════════ */
 
-            // Step 2: Within figure bounds, find the longest gray run
-            let bestStart = -1, bestEnd = -1, bestLen = 0;
-            let runStart = -1, runLen = 0;
+    _synthesize(mlFace, existingMask, anatomy, panelW, panelH) {
+        let cx, cy, w, h, method, confidence;
 
-            for (let x = leftEdge + 1; x < rightEdge; x++) {
-                const i = (y * scanW + x) * 4;
-                const diff = Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b);
-
-                if (diff <= threshold) {
-                    // Gray pixel inside figure
-                    if (runStart === -1) runStart = x;
-                    runLen++;
-                } else {
-                    if (runLen > bestLen) {
-                        bestLen = runLen;
-                        bestStart = runStart;
-                        bestEnd = x - 1;
-                    }
-                    runStart = -1;
-                    runLen = 0;
-                }
-            }
-            if (runLen > bestLen) {
-                bestLen = runLen;
-                bestStart = runStart;
-                bestEnd = rightEdge - 1;
-            }
-
-            // A significant gray run (> 5% of panel width) inside the figure = existing mask
-            if (bestLen > scanW * 0.05 && bestStart > -1) {
-                gapRows.push({
-                    y,
-                    gapStart: bestStart,
-                    gapEnd: bestEnd,
-                    gapWidth: bestLen,
-                });
-            }
+        if (mlFace) {
+            // Highest confidence: MediaPipe found a real face
+            cx = mlFace.cx;
+            cy = mlFace.cy;
+            w = mlFace.w;
+            h = mlFace.h;
+            method = 'auto';
+            confidence = 0.95;
+        } else if (existingMask) {
+            // Medium confidence: We found an existing AI mask to replace
+            cx = existingMask.cx;
+            cy = existingMask.cy;
+            w = existingMask.w;
+            h = existingMask.h;
+            method = 'existing-mask';
+            confidence = 0.70;
+        } else {
+            // Fallback confidence: Mathematical deduction from body bounds
+            cx = anatomy.cx;
+            cy = anatomy.cy;
+            w = anatomy.w;
+            h = anatomy.h;
+            method = 'heuristic';
+            confidence = 0.40;
         }
 
-        // Need at least several rows with consistent gray gaps to confirm a mask
-        if (gapRows.length < 5) return null;
+        // Apply Padding (20% to enclose the face/mask perfectly)
+        w *= 1.2;
+        h *= 1.2;
 
-        // Calculate the mask center and size from the gap rows
-        const midIdx = Math.floor(gapRows.length / 2);
-        const cy = (gapRows[0].y + gapRows[gapRows.length - 1].y) / 2;
-        const cx = gapRows.reduce((s, r) => s + (r.gapStart + r.gapEnd) / 2, 0) / gapRows.length;
-        const maxGapW = Math.max(...gapRows.map(r => r.gapWidth));
-        const gapH = gapRows[gapRows.length - 1].y - gapRows[0].y;
+        // Aspect Ratio Clamping (Prevent thin slivers)
+        w = Math.max(w, h * 0.45);
 
-        // Sanity check: mask should be roughly face-shaped (not a thin strip)
-        if (gapH < 3 || maxGapW < 3) return null;
-
-        console.log(`Existing mask detected: center=(${cx.toFixed(0)}, ${cy.toFixed(0)}), size=${maxGapW}×${gapH}, rows=${gapRows.length}`);
+        // Calculate dynamic feather radius (15% of largest dimension)
+        // Scaled as a percentage of the width for the UI slider (which expects 0-100)
+        // In our app.js, `feather` is a percentage of the radius.
+        // If we want the feather zone to be 15% of the total dimension, that's roughly 30% of the radius.
+        const featherPercentage = 30; 
 
         return {
-            cx,
-            cy,
-            w: maxGapW * 1.1,
-            h: gapH * 1.1,
+            cx, cy, width: w, height: h,
+            feather: featherPercentage,
+            method, confidence
         };
     }
 
-    /**
-     * Estimate face position from the figure boundary (for unmasked images).
-     */
-    _estimateFromFigure(panel, figure, data, scanW, bg, threshold, scanScale) {
-        // Face center Y: approximately 5.5% of figure height below figure top
-        const faceCenterY = figure.top + figure.height * 0.06;
-
-        // For horizontal center: scan near the top of the figure (hair area)
-        // which is reliable even if the face is masked
-        const scanRow = Math.min(Math.round(figure.top + figure.height * 0.03), scanW - 1);
-        let leftEdge = 0, rightEdge = scanW;
-
-        if (scanRow >= 0 && scanRow < Math.round(panel.h * scanScale)) {
-            for (let x = 0; x < scanW; x++) {
-                const i = (scanRow * scanW + x) * 4;
-                if (Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b) > threshold) {
-                    leftEdge = x;
-                    break;
-                }
-            }
-            for (let x = scanW - 1; x >= 0; x--) {
-                const i = (scanRow * scanW + x) * 4;
-                if (Math.abs(data[i]-bg.r) + Math.abs(data[i+1]-bg.g) + Math.abs(data[i+2]-bg.b) > threshold) {
-                    rightEdge = x;
-                    break;
-                }
-            }
-        }
-
-        const faceCenterX = (leftEdge + rightEdge) / 2;
-        const faceW = figure.height * 0.10;
-        const faceH = figure.height * 0.09;
-
-        return {
-            x: panel.x + faceCenterX / scanScale,
-            y: panel.y + faceCenterY / scanScale,
-            width:  faceW / scanScale,
-            height: faceH / scanScale,
-            confidence: 0.3,
-            method: 'heuristic',
-        };
-    }
-
-    /* ───────────────────── Basic Heuristic ───────────────────── */
+    /* ═══════════════════════════════════════════════════════════
+       Fallback / Default
+       ═══════════════════════════════════════════════════════════ */
 
     getHeuristicPosition(panel) {
         return {
             x: panel.x + panel.w * 0.50,
-            y: panel.y + panel.h * 0.20,
-            width:  panel.w * 0.22,
-            height: panel.h * 0.14,
+            y: panel.y + panel.h * 0.15,
+            width:  panel.w * 0.15,
+            height: panel.h * 0.12,
             confidence: 0,
             method: 'heuristic',
         };
     }
 }
-
-/**
- * @typedef {Object} FaceDetectionResult
- * @property {number} x       – Center X in full-image coordinates
- * @property {number} y       – Center Y in full-image coordinates
- * @property {number} width   – Full width of the detected face region
- * @property {number} height  – Full height of the detected face region
- * @property {number} confidence – 0–1 (0 = heuristic)
- * @property {'auto'|'heuristic'} method
- */
