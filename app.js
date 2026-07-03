@@ -761,6 +761,8 @@ App.detectCurrentFace = async function () {
     entry.mask.y = result.y;
     entry.mask.width = result.width;
     entry.mask.height = result.height;
+    entry.mask.feather = result.feather;
+    entry.mask.softness = result.softness;
     entry.mask.method = result.method;
     entry.mask.confidence = result.confidence;
     entry.applied = false;
@@ -770,10 +772,18 @@ App.detectCurrentFace = async function () {
     this.render();
     this.hideLoading();
 
-    const msg = result.method === 'auto'
-        ? `Face detected (${(result.confidence * 100).toFixed(0)}% confidence)`
-        : 'Using heuristic position — adjust manually';
-    this.showToast(msg, result.method === 'auto' ? 'success' : 'warning');
+    let msg, type;
+    if (result.method === 'auto') {
+        msg = `Face detected (${(result.confidence * 100).toFixed(0)}% confidence)`;
+        type = 'success';
+    } else if (result.method === 'existing-mask') {
+        msg = `Existing mask detected — repositioned for soft brush`;
+        type = 'success';
+    } else {
+        msg = 'Using heuristic position — click on the face to adjust';
+        type = 'warning';
+    }
+    this.showToast(msg, type);
 };
 
 App.detectAllFaces = async function () {
@@ -794,6 +804,8 @@ App.detectAllFaces = async function () {
         entry.mask.y = result.y;
         entry.mask.width = result.width;
         entry.mask.height = result.height;
+        entry.mask.feather = result.feather;
+        entry.mask.softness = result.softness;
         entry.mask.method = result.method;
         entry.mask.confidence = result.confidence;
     }
