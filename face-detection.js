@@ -30,19 +30,15 @@ class FaceDetectorModule {
         this._onStatus('loading', 'Loading MediaPipe Vision Tasks…');
 
         try {
-            // Load MediaPipe from CDN if not present
-            if (typeof window.FilesetResolver === 'undefined') {
-                await this._loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js');
-            }
+            this._onStatus('loading', 'Loading MediaPipe Vision Tasks…');
+            
+            // Dynamically import the ES module bundle from CDN
+            const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/+esm');
 
             this._onStatus('loading', 'Initializing Face Landmarker model…');
             
-            // Note: MediaPipe tasks-vision creates global objects or module exports.
-            // When loaded via script tag, it puts classes on window.
-            const vision = window; 
-            
             const filesetResolver = await vision.FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
             );
 
             this.faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
@@ -66,17 +62,6 @@ class FaceDetectorModule {
             this._onStatus('fallback', 'ML Unavailable — using Heuristic pipeline');
             return false;
         }
-    }
-
-    _loadScript(src) {
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = src;
-            script.crossOrigin = 'anonymous';
-            script.onload = resolve;
-            script.onerror = () => reject(new Error('Failed to load: ' + src));
-            document.head.appendChild(script);
-        });
     }
 
     /* ═══════════════════════════════════════════════════════════
