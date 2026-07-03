@@ -755,6 +755,7 @@ App.detectCurrentFace = async function () {
 
     const panel = this.getPanelBounds(entry.origWidth, entry.origHeight);
     const result = await this.detector.detect(entry.img, panel);
+    console.log('Detection pipeline result:', result);
 
     entry.mask.x = result.x;
     entry.mask.y = result.y;
