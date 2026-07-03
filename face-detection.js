@@ -33,7 +33,7 @@ class FaceDetectorModule {
             this._onStatus('loading', 'Loading MediaPipe Vision Tasks…');
             
             // Dynamically import the ES module bundle from CDN
-            const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/+esm');
+            const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs');
 
             this._onStatus('loading', 'Initializing Face Landmarker model…');
             
