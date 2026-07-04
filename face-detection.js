@@ -95,74 +95,60 @@ class FaceDetectorModule {
         const figure = this._isolateFigure(panelCanvas);
         console.log('[detect] Figure:', figure);
 
-        // Step 2: Check for an existing mask (gray blob that differs from background)
-        const existingMask = figure ? this._detectExistingMask(panelCanvas, figure) : null;
-        console.log('[detect] Existing mask:', existingMask);
+        let result = null;
+        let mlFace = null;
 
-        let result;
+        if (this.isLoaded && this.faceLandmarker) {
+            // First try: detect face directly on the left panel
+            mlFace = this._runMediaPipe(panelCanvas);
+            console.log('[detect] MediaPipe on left panel:', mlFace);
 
-        if (existingMask) {
-            // ──── Path B: Pre-masked face ────
-            // Use the existing mask's position (it tells us where the face WAS)
-            result = {
-                cx: existingMask.cx,
-                cy: existingMask.cy,
-                w: existingMask.w * 1.15,  // slight expansion for full coverage
-                h: existingMask.h * 1.15,
-                method: 'existing-mask',
-                confidence: 0.75,
-            };
-            console.log('[detect] Using existing mask position');
-        } else {
-            // ──── Path A: No mask — try ML detection ────
-            let mlFace = null;
+            // Second try: The image might be too large and the face too small for MediaPipe.
+            // Crop the top 35% of the figure (head/shoulders area) and try again!
+            if (!mlFace && figure) {
+                const headCropY = figure.top;
+                const headCropH = Math.floor(figure.figH * 0.35);
+                const headCropW = figure.figW;
+                const headCropX = figure.left;
+                
+                const headPanel = this._cropToCanvas(panelCanvas, headCropX, headCropY, headCropW, headCropH);
+                const headFace = this._runMediaPipe(headPanel);
+                console.log('[detect] MediaPipe on left panel (cropped top 35%):', headFace);
 
-            if (this.isLoaded && this.faceLandmarker) {
-                // First try: detect face directly on the left panel
-                mlFace = this._runMediaPipe(panelCanvas);
-                console.log('[detect] MediaPipe on left panel:', mlFace);
-
-                // Second try: detect on the RIGHT panel (close-up) and map proportions
-                if (!mlFace && figure) {
-                    const rightPanel = this._cropToCanvas(
-                        source,
-                        Math.floor(source.naturalWidth * 2 / 3), 0,
-                        Math.floor(source.naturalWidth / 3), source.naturalHeight
-                    );
-                    const rightFace = this._runMediaPipe(rightPanel);
-                    console.log('[detect] MediaPipe on right panel:', rightFace);
-
-                    if (rightFace) {
-                        // The right panel face gives us proportional info
-                        // Map it onto the left panel using figure bounds
-                        mlFace = this._mapRightFaceToLeft(rightFace, rightPanel, figure, panelCanvas);
-                        console.log('[detect] Mapped right→left:', mlFace);
-                    }
+                if (headFace) {
+                    // Map the coordinates from the cropped head panel back to the full left panel
+                    mlFace = {
+                        cx: headCropX + headFace.cx,
+                        cy: headCropY + headFace.cy,
+                        w: headFace.w,
+                        h: headFace.h
+                    };
+                    console.log('[detect] Mapped cropped face back to left panel:', mlFace);
                 }
             }
+        }
 
-            if (mlFace) {
-                result = {
-                    cx: mlFace.cx,
-                    cy: mlFace.cy,
-                    w: mlFace.w * 1.2,
-                    h: mlFace.h * 1.2,
-                    method: 'auto',
-                    confidence: 0.92,
-                };
-            } else {
-                // Final fallback: anatomical heuristics from figure bounds
-                const anatomy = this._deduceAnatomy(figure, panel.w, panel.h);
-                console.log('[detect] Anatomy fallback:', anatomy);
-                result = {
-                    cx: anatomy.cx,
-                    cy: anatomy.cy,
-                    w: anatomy.w,
-                    h: anatomy.h,
-                    method: 'heuristic',
-                    confidence: 0.45,
-                };
-            }
+        if (mlFace) {
+            result = {
+                cx: mlFace.cx,
+                cy: mlFace.cy,
+                w: mlFace.w * 2.0, // Enlarge mask significantly to cover the whole face nicely
+                h: mlFace.h * 2.0,
+                method: 'auto',
+                confidence: 0.95,
+            };
+        } else {
+            // Final fallback: anatomical heuristics from figure bounds
+            const anatomy = this._deduceAnatomy(figure, panel.w, panel.h);
+            console.log('[detect] Anatomy fallback:', anatomy);
+            result = {
+                cx: anatomy.cx,
+                cy: figure ? figure.top + (figure.figH * 0.13) : anatomy.cy,
+                w: anatomy.w,
+                h: anatomy.h,
+                method: 'heuristic',
+                confidence: 0.45,
+            };
         }
 
         // Ensure minimum dimensions

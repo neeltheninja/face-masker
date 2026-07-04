@@ -185,6 +185,13 @@
                         Lock aspect ratio
                     </label>
                 </div>
+                <div class="control-row quick-scale-row">
+                    <label class="control-label">Quick</label>
+                    <div class="button-group-inline">
+                        <button class="btn btn-small btn-secondary" id="scaleDownBtn" disabled>– 10%</button>
+                        <button class="btn btn-small btn-secondary" id="scaleUpBtn" disabled>+ 10%</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Brush Settings -->
@@ -203,6 +210,28 @@
                     <input type="range" class="control-slider" id="softness" min="5" max="100" value="30" disabled>
                     <span class="control-value" id="softnessVal">—</span>
                 </div>
+            </div>
+
+            <!-- Mask Color -->
+            <div class="control-group">
+                <h3 class="group-title">
+                    <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4 2a2 2 0 00-2 2v11a3 3 0 106 0V4a2 2 0 00-2-2H4zm1 14a1 1 0 100-2 1 1 0 000 2zm5-1.757l4.9-4.9a2 2 0 000-2.828L13.485 5.1a2 2 0 00-2.828 0L10 5.757v8.486zM16 18H9.071l6-6H16a2 2 0 012 2v2a2 2 0 01-2 2z"/></svg>
+                    Mask Color
+                </h3>
+                <div class="control-row color-row">
+                    <label class="control-label">Color</label>
+                    <input type="color" class="color-picker" id="maskColorPicker" value="#808080" disabled>
+                    <span class="control-value color-hex" id="maskColorHex">#808080</span>
+                    <button class="btn btn-small btn-icon" id="eyeDropperBtn" title="Pick from image" disabled>
+                        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                            <path fill-rule="evenodd" d="M13.707 3.293a1 1 0 011.414 0l1.586 1.586a1 1 0 010 1.414l-2.025 2.025-2.975-2.975 2.025-2.025zM11.293 6.707l2.975 2.975-7.397 7.396A2.5 2.5 0 015.104 18H4a1 1 0 01-1-1v-1.104a2.5 2.5 0 01.922-1.767l7.37-7.422z"/>
+                        </svg>
+                    </button>
+                </div>
+                <button class="btn btn-small btn-resample" id="resampleColorBtn" disabled>
+                    <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1z"/></svg>
+                    Re-sample from Image
+                </button>
             </div>
 
             <hr class="divider">

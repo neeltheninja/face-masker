@@ -840,6 +840,42 @@ body {
     flex: 1;
 }
 
+.button-group-inline {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+}
+
+.button-group-inline .btn {
+    flex: 1;
+    padding: var(--sp-xs);
+    font-size: 11px;
+}
+
+.btn-icon {
+    padding: var(--sp-xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--surface-border);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+}
+
+.btn-icon:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.btn-icon.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+}
+
 /* ═══════════════════════ SHORTCUTS ═══════════════════════ */
 .shortcuts-group {
     margin-top: auto;

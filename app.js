@@ -121,6 +121,10 @@ App.cacheElements = function () {
         maskWVal: q('#maskWVal'),
         maskHVal: q('#maskHVal'),
 
+        scaleDownBtn: q('#scaleDownBtn'),
+        scaleUpBtn: q('#scaleUpBtn'),
+        resampleColorBtn: q('#resampleColorBtn'),
+
         lockAspect: q('#lockAspect'),
 
         featherRadius: q('#featherRadius'),
@@ -130,6 +134,7 @@ App.cacheElements = function () {
 
         resetBtn: q('#resetBtn'),
         applyBtn: q('#applyBtn'),
+        eyeDropperBtn: q('#eyeDropperBtn'),
 
         exportCurrentBtn: q('#exportCurrentBtn'),
         exportAllZipBtn: q('#exportAllZipBtn'),
@@ -175,7 +180,9 @@ App.setupEventListeners = function () {
         this.el.fileInput.click();
     });
     this.el.dropZone.addEventListener('click', () => this.el.fileInput.click());
-    this.el.fileInput.addEventListener('change', (e) => this.handleFiles(e.target.files));
+    this.el.fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) this.handleFiles(e.target.files);
+    });
     this.el.addMoreBtn.addEventListener('click', () => {
         this.el.fileInput.value = '';
         this.el.fileInput.click();
@@ -189,6 +196,49 @@ App.setupEventListeners = function () {
     // Detection
     this.el.detectBtn.addEventListener('click', () => this.detectCurrentFace());
     this.el.detectAllBtn.addEventListener('click', () => this.detectAllFaces());
+
+    // Resample
+    this.el.resampleColorBtn.addEventListener('click', () => {
+        const entry = this.currentEntry();
+        if (!entry) return;
+        entry.mask.bgColor = this.getBackgroundColor(entry.img, entry.mask.y, entry.mask.x, entry.mask.width);
+        entry.mask.method = 'manual';
+        this.updateSlidersFromMask(entry.mask);
+        this.render();
+    });
+
+    // Quick Scale Buttons
+    this.el.scaleDownBtn.addEventListener('click', () => {
+        const entry = this.currentEntry();
+        if (!entry) return;
+        entry.mask.width = Math.max(20, entry.mask.width * 0.9);
+        entry.mask.height = Math.max(20, entry.mask.height * 0.9);
+        entry.mask.method = 'manual';
+        this.updateSlidersFromMask(entry.mask);
+        this.render();
+    });
+
+    this.el.scaleUpBtn.addEventListener('click', () => {
+        const entry = this.currentEntry();
+        if (!entry) return;
+        entry.mask.width = Math.min(1000, entry.mask.width * 1.1);
+        entry.mask.height = Math.min(1000, entry.mask.height * 1.1);
+        entry.mask.method = 'manual';
+        this.updateSlidersFromMask(entry.mask);
+        this.render();
+    });
+
+    // Eyedropper
+    this.el.eyeDropperBtn.addEventListener('click', () => {
+        this.isEyeDropping = !this.isEyeDropping;
+        if (this.isEyeDropping) {
+            this.el.eyeDropperBtn.classList.add('active');
+            this.el.previewCanvas.style.cursor = 'crosshair';
+        } else {
+            this.el.eyeDropperBtn.classList.remove('active');
+            this.el.previewCanvas.style.cursor = '';
+        }
+    });
 
     // Sliders
     const sliderInputHandler = (slider, display, prop) => {
@@ -340,6 +390,29 @@ App.setupCanvasInteraction = function () {
         if (!entry) return;
 
         const { imgX, imgY } = this.canvasToImage(e);
+
+        // Handle EyeDropper Mode
+        if (this.isEyeDropping) {
+            // Draw original image to temp canvas to sample exact pixel
+            const tmp = document.createElement('canvas');
+            tmp.width = 1;
+            tmp.height = 1;
+            const tCtx = tmp.getContext('2d');
+            tCtx.drawImage(entry.img, imgX, imgY, 1, 1, 0, 0, 1, 1);
+            const p = tCtx.getImageData(0, 0, 1, 1).data;
+            
+            entry.mask.bgColor = { r: p[0], g: p[1], b: p[2] };
+            entry.mask.method = 'manual';
+            
+            this.isEyeDropping = false;
+            this.el.eyeDropperBtn.classList.remove('active');
+            this.el.previewCanvas.style.cursor = '';
+            
+            this.updateSlidersFromMask(entry.mask);
+            this.render();
+            return;
+        }
+
         const m = entry.mask;
 
         // Don't re-place if clicking inside the existing mask
@@ -537,20 +610,37 @@ App.handleFiles = function (fileList) {
     });
 };
 
-App.getBackgroundColor = function (img) {
+App.getBackgroundColor = function (img, faceY, faceX, faceW) {
+    const sampleW = 10;
+    const sampleH = 10;
     const c = document.createElement('canvas');
-    c.width = 5;
-    c.height = 5;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0, 5, 5, 0, 0, 5, 5);
-    const data = ctx.getImageData(0, 0, 5, 5).data;
-    let r = 0, g = 0, b = 0;
-    for (let i = 0; i < data.length; i += 4) {
-        r += data[i];
-        g += data[i+1];
-        b += data[i+2];
+    c.width = sampleW;
+    c.height = sampleH;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    
+    const panelW = Math.floor(img.naturalWidth / 3);
+    
+    // Default to the right side of the panel if we don't have face info
+    let startXRight = Math.max(15, panelW - sampleW - 15);
+    
+    if (faceX !== undefined && faceW !== undefined) {
+        // Go 2.0x face widths to the right of the face center
+        startXRight = Math.min(panelW - sampleW - 5, Math.floor(faceX + (faceW * 2.0)));
     }
-    const count = data.length / 4;
+    
+    const startY = faceY ? Math.max(15, Math.floor(faceY - 5)) : 15;
+    
+    // Get right sample ONLY to avoid left-side hair/vignettes
+    ctx.drawImage(img, startXRight, startY, sampleW, sampleH, 0, 0, sampleW, sampleH);
+    const dataR = ctx.getImageData(0, 0, sampleW, sampleH).data;
+    
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < dataR.length; i += 4) {
+        r += dataR[i];
+        g += dataR[i+1];
+        b += dataR[i+2];
+    }
+    const count = dataR.length / 4;
     return { r: Math.round(r/count), g: Math.round(g/count), b: Math.round(b/count) };
 };
 
@@ -559,9 +649,21 @@ App.getDefaultMask = function (img) {
     const imgH = img.naturalHeight;
     // Default heuristic position for the left panel
     const panel = this.getPanelBounds(imgW, imgH);
-    const pos = this.detector.getHeuristicPosition(panel);
+    
+    let pos;
+    if (this.detector && this.detector.getHeuristicPosition) {
+        pos = this.detector.getHeuristicPosition(panel);
+    } else {
+        pos = {
+            x: panel.x + panel.w * 0.50,
+            y: panel.y + panel.h * 0.14,
+            width: panel.w * 0.25, // default size bumped up
+            height: panel.h * 0.12,
+        };
+    }
+    
     return {
-        bgColor: this.getBackgroundColor(img),
+        bgColor: this.getBackgroundColor(img, pos.y, pos.x, pos.width),
         x: pos.x,
         y: pos.y,
         width: pos.width,
@@ -690,6 +792,10 @@ App.enableControls = function () {
 
     this.el.detectBtn.disabled = false;
     this.el.detectAllBtn.disabled = false;
+    this.el.resampleColorBtn.disabled = false;
+    this.el.scaleDownBtn.disabled = false;
+    this.el.scaleUpBtn.disabled = false;
+    this.el.eyeDropperBtn.disabled = false;
     this.el.resetBtn.disabled = false;
     this.el.applyBtn.disabled = false;
     this.el.exportCurrentBtn.disabled = false;
@@ -703,6 +809,10 @@ App.disableControls = function () {
 
     this.el.detectBtn.disabled = true;
     this.el.detectAllBtn.disabled = true;
+    this.el.resampleColorBtn.disabled = true;
+    this.el.scaleDownBtn.disabled = true;
+    this.el.scaleUpBtn.disabled = true;
+    this.el.eyeDropperBtn.disabled = true;
     this.el.resetBtn.disabled = true;
     this.el.applyBtn.disabled = true;
     this.el.exportCurrentBtn.disabled = true;
